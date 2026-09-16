@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PaperLens Self-Check</title>
+<meta name="description" content="A private, in-browser writing-rigor checklist for draft manuscripts. Nothing you paste or upload ever leaves your device.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="container">
+
+  <header class="app-header">
+    <h1>PaperLens Self-Check</h1>
+    <div class="privacy-badge">Runs entirely on your device. Your draft is never uploaded, stored, or sent anywhere.</div>
+    <p class="subtitle">Checks the reporting habits that make a paper believable: sample size, uncertainty, comparisons, and honest claims.</p>
+  </header>
+
+  <main>
+    <div class="tabs" role="tablist" aria-label="Input mode">
+      <button class="tab-btn" role="tab" id="tab-upload" data-tab="upload" aria-selected="true" aria-controls="panel-upload" tabindex="0">Upload PDF</button>
+      <button class="tab-btn" role="tab" id="tab-paste" data-tab="paste" aria-selected="false" aria-controls="panel-paste" tabindex="-1">Paste text</button>
+    </div>
+
+    <section class="tab-panel" id="panel-upload" role="tabpanel" aria-labelledby="tab-upload">
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Drop a PDF or text file here, or activate to choose a file">
+        <p><strong>Drag and drop</strong> your manuscript here, or click to choose a file.</p>
+        <p>Accepts .pdf and .txt — parsed locally in this tab, never uploaded.</p>
+        <input type="file" id="fileInput" accept=".pdf,.txt,application/pdf,text/plain">
+      </div>
+      <p class="file-name" id="fileName" aria-live="polite"></p>
+    </section>
+
+    <section class="tab-panel" id="panel-paste" role="tabpanel" aria-labelledby="tab-paste" hidden>
+      <label for="pasteInput" class="sr-only">Paste your manuscript text</label>
+      <textarea id="pasteInput" placeholder="Paste your draft here (from Google Docs, Word, LaTeX output, etc.)"></textarea>
+      <div class="panel-actions">
+        <button type="button" class="primary" id="runPasteBtn">Run checks</button>
+      </div>
+    </section>
+
+    <div class="progress-wrap" id="progressWrap" hidden aria-live="polite">
+      <div class="progress-bar-track"><div class="progress-bar-fill" id="progressFill"></div></div>
+      <p class="progress-label" id="progressLabel"></p>
+    </div>
+
+    <section id="results" hidden aria-live="polite">
+      <div class="summary-strip">
+        <div class="readiness-score">
+          <span class="num" id="scoreNum">0</span>
+          <span class="label">/100<br>readiness</span>
+        </div>
+        <div class="counts-plain" id="countsPlain"></div>
+        <div class="export-actions no-print">
+          <button type="button" id="downloadReportBtn">Download report</button>
+          <button type="button" id="copyAllFixesBtn">Copy all fixes</button>
+        </div>
+      </div>
+
+      <h2 class="section-heading"><span class="severity-badge blocker">blocker</span> Blockers — fix these first</h2>
+      <div id="blockerGroup"></div>
+
+      <h2 class="section-heading"><span class="severity-badge warn">warn</span> Warnings — fixable today</h2>
+      <div id="warnGroup"></div>
+
+      <h2 class="section-heading"><span class="severity-badge info">info</span> Notes — proportion and style</h2>
+      <div id="infoGroup"></div>
+
+      <h2 class="section-heading">Checked and clear</h2>
+      <div class="pass-list" id="passList"></div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <p>This page may be hosted publicly, but your file is processed only in your browser. Nothing is uploaded, stored, or sent anywhere. Reloading this page discards your draft — that is by design.</p>
+  </footer>
+
+</div>
+
+<script src="vendor/pdfjs/pdf.min.js"></script>
+<script src="checks.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
