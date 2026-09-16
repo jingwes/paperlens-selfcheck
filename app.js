@@ -4,9 +4,8 @@
  * PRIVACY: this file never sends the manuscript anywhere. There is no
  * fetch/XHR/WebSocket call in this codebase that carries file bytes or
  * extracted text, no localStorage/sessionStorage/IndexedDB/cookie writes,
- * and no service worker. The manuscript text lives only in the local
- * `currentText` variable below and is discarded on reload — that is the
- * design, not a limitation.
+ * and no service worker. The manuscript text lives only in local variables
+ * below and is discarded on reload — that is the design, not a limitation.
  */
 
 (function () {
@@ -16,6 +15,10 @@
   if (window.pdfjsLib) {
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs/pdf.worker.min.js';
   }
+
+  // Internal severity keys (blocker/warn/info) stay as-is throughout
+  // checks.js and scoring; this is only how they're labeled on screen.
+  const SEVERITY_LABELS = { blocker: 'major', warn: 'minor', info: 'note' };
 
   // ---- DOM refs -----------------------------------------------------------
   const tabButtons = Array.from(document.querySelectorAll('.tab-btn'));
@@ -43,10 +46,10 @@
   const infoGroup = document.getElementById('infoGroup');
   const passListEl = document.getElementById('passList');
 
-  const downloadReportBtn = document.getElementById('downloadReportBtn');
-
-  let currentDraftName = 'draft';
-  let lastRunData = null; // { results, score, blockers, warns, infos }
+  // Character ranges for each PDF page in the current manuscript text, so a
+  // flag's text offset can be mapped back to "pg. X". Null for pasted/typed
+  // text, which has no page concept.
+  let currentPageOffsets = null;
 
   // ---- Tabs -----------------------------------------------------------
   function selectTab(name) {
@@ -89,10 +92,6 @@
   }
 
   // ---- File handling ------------------------------------------------------
-  function stripExtension(name) {
-    return name.replace(/\.[^./\\]+$/, '');
-  }
-
   function readFileAsText(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -111,10 +110,14 @@
     });
   }
 
+  // Returns { text, pageOffsets } — pageOffsets is an array of
+  // { page, start, end } character ranges within `text`, one per PDF page,
+  // used later to show "(pg. X)" next to a flag's location.
   async function extractPdfText(arrayBuffer) {
     const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
     const pdf = await loadingTask.promise;
-    const pageTexts = [];
+    let text = '';
+    const pageOffsets = [];
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       showProgress(`Reading page ${pageNum} of ${pdf.numPages}…`, (pageNum - 1) / pdf.numPages * 100);
       const page = await pdf.getPage(pageNum);
@@ -124,11 +127,14 @@
         pageText += item.str;
         pageText += item.hasEOL ? '\n' : ' ';
       }
-      pageTexts.push(pageText);
+      const start = text.length;
+      text += pageText;
+      pageOffsets.push({ page: pageNum, start, end: text.length });
+      if (pageNum < pdf.numPages) text += '\n\n';
       await yieldToUI();
     }
     showProgress('Finished reading the PDF.', 100);
-    return pageTexts.join('\n\n');
+    return { text, pageOffsets };
   }
 
   async function handleFile(file) {
@@ -140,7 +146,6 @@
       return;
     }
 
-    currentDraftName = stripExtension(file.name) || 'draft';
     fileNameEl.textContent = `Selected: ${file.name}`;
 
     try {
@@ -148,10 +153,13 @@
       if (isPdf) {
         showProgress('Loading PDF…', 0);
         const buf = await readFileAsArrayBuffer(file);
-        text = await extractPdfText(buf);
+        const extracted = await extractPdfText(buf);
+        text = extracted.text;
+        currentPageOffsets = extracted.pageOffsets;
       } else {
         showProgress('Reading file…', 50);
         text = await readFileAsText(file);
+        currentPageOffsets = null;
       }
       await yieldToUI();
       showProgress('Running checks…', 100);
@@ -190,7 +198,7 @@
   runPasteBtn.addEventListener('click', () => {
     const text = pasteInput.value;
     if (!text.trim()) return;
-    currentDraftName = 'draft';
+    currentPageOffsets = null;
     showProgress('Running checks…', 100);
     setTimeout(() => {
       runChecks(text);
@@ -202,8 +210,7 @@
   function runChecks(text) {
     const { results } = runAllChecks(text, CONFIG);
     const { score, blockers, warns, infos } = scoreResults(results);
-    lastRunData = { results, score, blockers, warns, infos };
-    renderResults(lastRunData);
+    renderResults({ results, score, blockers, warns, infos });
   }
 
   function escapeHtml(str) {
@@ -229,19 +236,40 @@
     return loc;
   }
 
+  // Maps a flag's manuscript-text offset to a PDF page number, or null when
+  // the source was pasted text (no pages) or the flag has no offset at all
+  // (a whole-document absence like "no baseline anywhere").
+  function pageForOffset(offset) {
+    if (!currentPageOffsets || offset == null) return null;
+    for (const p of currentPageOffsets) {
+      if (offset >= p.start && offset < p.end) return p.page;
+    }
+    if (currentPageOffsets.length === 0) return null;
+    return offset < currentPageOffsets[0].start
+      ? currentPageOffsets[0].page
+      : currentPageOffsets[currentPageOffsets.length - 1].page;
+  }
+
+  function locationWithPage(flag) {
+    const label = friendlyLocation(flag.location);
+    const page = pageForOffset(flag.offset);
+    return page ? `${label} (pg. ${page})` : label;
+  }
+
   function flagCardHtml(flag) {
     const quoteHtml = flag.quote
       ? `<blockquote class="quote">${highlightedQuoteHtml(flag.quote, flag.highlight)}</blockquote>`
       : '';
+    const severityLabel = SEVERITY_LABELS[flag.severity] || flag.severity;
     return `
       <div class="flag-card ${flag.severity}">
         <div class="card-top">
-          <span class="severity-badge ${flag.severity}">${flag.severity}</span>
+          <span class="severity-badge ${flag.severity}">${escapeHtml(severityLabel)}</span>
           <h3>${escapeHtml(flag.title)}</h3>
         </div>
         <p class="explanation">${escapeHtml(flag.explanation)}</p>
         ${quoteHtml}
-        <div class="location">Location: ${escapeHtml(friendlyLocation(flag.location))}</div>
+        <div class="location">Location: ${escapeHtml(locationWithPage(flag))}</div>
         <div class="fix-line">
           <div class="fix-text"><strong>Fix:</strong> ${escapeHtml(flag.fix)}</div>
         </div>
@@ -254,15 +282,15 @@
     resultsEl.hidden = false;
 
     scoreNumEl.textContent = String(score);
-    countsPlainEl.textContent = `${blockers} blocker${blockers === 1 ? '' : 's'}, ${warns} warning${warns === 1 ? '' : 's'}, ${infos} note${infos === 1 ? '' : 's'}`;
+    countsPlainEl.textContent = `${blockers} major issue${blockers === 1 ? '' : 's'}, ${warns} minor issue${warns === 1 ? '' : 's'}, ${infos} note${infos === 1 ? '' : 's'}`;
 
     const allFlags = results.flatMap((r) => r.flags);
     const byId = (sev) => allFlags.filter((f) => f.severity === sev);
 
     blockerGroup.innerHTML = byId('blocker').map(flagCardHtml).join('') ||
-      '<p class="empty-note">No blockers found.</p>';
+      '<p class="empty-note">No major issues found.</p>';
     warnGroup.innerHTML = byId('warn').map(flagCardHtml).join('') ||
-      '<p class="empty-note">No warnings found.</p>';
+      '<p class="empty-note">No minor issues found.</p>';
     infoGroup.innerHTML = byId('info').map(flagCardHtml).join('') ||
       '<p class="empty-note">No notes.</p>';
 
@@ -282,75 +310,6 @@
 
     resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
-
-  // ---- Export -------------------------------------------------------------
-  function sanitizeFilename(name) {
-    return name.replace(/[^a-z0-9-_]+/gi, '_').replace(/^_+|_+$/g, '') || 'draft';
-  }
-
-  function buildMarkdownReport(data) {
-    const { results, score, blockers, warns, infos } = data;
-    const lines = [];
-    lines.push(`# PaperLens Self-Check report`);
-    lines.push('');
-    lines.push(`Readiness score: **${score}/100**`);
-    lines.push(`(${blockers} blocker${blockers === 1 ? '' : 's'}, ${warns} warning${warns === 1 ? '' : 's'}, ${infos} note${infos === 1 ? '' : 's'})`);
-    lines.push('');
-    lines.push('_This score is a nudge, not a grade — read the full list below before you decide what to fix._');
-    lines.push('');
-
-    const section = (title, sev) => {
-      const flags = results.flatMap((r) => r.flags).filter((f) => f.severity === sev);
-      lines.push(`## ${title}`);
-      lines.push('');
-      if (flags.length === 0) {
-        lines.push(`No ${title.toLowerCase()} found.`);
-        lines.push('');
-        return;
-      }
-      flags.forEach((f) => {
-        lines.push(`### ${f.title}`);
-        lines.push('');
-        lines.push(f.explanation);
-        lines.push('');
-        if (f.quote) lines.push(`> ${f.quote}`);
-        lines.push('');
-        lines.push(`Location: ${friendlyLocation(f.location)}`);
-        lines.push('');
-        lines.push(`**Fix:** ${f.fix}`);
-        lines.push('');
-      });
-    };
-    section('Blockers', 'blocker');
-    section('Warnings', 'warn');
-    section('Notes', 'info');
-
-    lines.push('## Checked and clear');
-    lines.push('');
-    results.filter((r) => r.flags.length === 0).forEach((r) => {
-      const message = r.skipped ? r.skipMessage : (r.passMessage || 'No issues found.');
-      lines.push(`- **${r.label}:** ${message}`);
-    });
-    lines.push('');
-    lines.push('---');
-    lines.push('_Generated entirely in your browser by PaperLens Self-Check. Your draft was never uploaded, stored, or sent anywhere._');
-
-    return lines.join('\n');
-  }
-
-  downloadReportBtn.addEventListener('click', () => {
-    if (!lastRunData) return;
-    const md = buildMarkdownReport(lastRunData);
-    const blob = new Blob([md], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${sanitizeFilename(currentDraftName)}.report.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  });
 
   selectTab('upload');
 })();

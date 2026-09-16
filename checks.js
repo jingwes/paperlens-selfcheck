@@ -158,6 +158,10 @@ const CONFIG = {
     { name: 'methods', patterns: ['methods', 'materials and methods', 'materials & methods'] },
     { name: 'results', patterns: ['results'] },
     { name: 'discussion', patterns: ['discussion'] },
+    // A combined heading (common in journals) is registered under BOTH
+    // names, pointing at the same section text, instead of matching
+    // neither "results" nor "discussion" and leaving both empty.
+    { name: ['results', 'discussion'], patterns: ['results and discussion', 'results & discussion', 'discussion and results'] },
     { name: 'conclusion', patterns: ['conclusion', 'conclusions'] },
     { name: 'limitations', patterns: ['limitations'] },
     { name: 'future work', patterns: ['future work'] },
@@ -198,6 +202,11 @@ function allDecimalOrPercent(text) {
   return text.match(new RegExp(DECIMAL_PERCENT_SRC, 'g')) || [];
 }
 const CITATION_RE = /\[\d+(?:\s*[,-]\s*\d+)*\]|\([A-Z][A-Za-z'-]+(?:\s+(?:et al\.?|and\s+[A-Z][A-Za-z'-]+))?,?\s*\d{4}[a-z]?\)/;
+// A figure/table citation in the same sentence (e.g. "(Fig. 3a)") counts as
+// evidence for the overclaim check, same as a number or an author-year cite —
+// a claim backed by an image or table is not unsupported just because the
+// support isn't a statistic.
+const FIGURE_TABLE_REF_RE = /\b(?:Figure|Fig\.?|Table|Extended Data Figure)\s*\d+[a-z]?\b/i;
 const P_VALUE_RE = /p\s*[<≤]\s*0?\.05/i;
 const FROM_TO_RE = /\bfrom\s+-?\d+(?:\.\d+)?\s+to\s+-?\d+(?:\.\d+)?\b/i;
 const N_EQUALS_RE = /\bn\s*=\s*\d+\b/i;
@@ -293,7 +302,9 @@ function detectSections(text) {
     for (const heading of CONFIG.sectionHeadings) {
       if (heading.patterns.includes(cleaned)) {
         headingMatches.push({
-          name: heading.name,
+          // A heading can map to more than one canonical name (a combined
+          // "Results and Discussion" heading registers under both).
+          names: Array.isArray(heading.name) ? heading.name : [heading.name],
           lineStart: line.start,
           headingEnd: line.start + line.text.length + 1,
         });
@@ -308,11 +319,16 @@ function detectSections(text) {
     const next = headingMatches[i + 1];
     const end = next ? next.lineStart : text.length;
     const body = text.slice(cur.headingEnd, end);
-    if (!sections[cur.name]) {
-      sections[cur.name] = { start: cur.headingEnd, end, text: body };
-    } else {
-      sections[cur.name].text += '\n' + body;
-      sections[cur.name].end = end;
+    // All names for a combined heading share the same underlying section
+    // object (not just equal content) so a word count computed from one
+    // name isn't double-counted as if it were separate text from another.
+    const sectionObj = { start: cur.headingEnd, end, text: body };
+    for (const nm of cur.names) {
+      if (!sections[nm]) {
+        sections[nm] = sectionObj;
+      } else {
+        sections[nm] = { start: sections[nm].start, end, text: sections[nm].text + '\n' + body };
+      }
     }
   }
 
@@ -362,8 +378,16 @@ function sentencesInSections(ctx, names) {
   return ctx.sentences.filter((s) => names.includes(s.section));
 }
 
-function makeFlag(checkId, severity, title, explanation, quote, highlight, location, fix) {
-  return { checkId, severity, title, explanation, quote: quote || null, highlight: highlight || null, location: location || 'entire manuscript', fix };
+function makeFlag(checkId, severity, title, explanation, quote, highlight, location, fix, offset) {
+  return {
+    checkId, severity, title, explanation, quote: quote || null, highlight: highlight || null,
+    location: location || 'entire manuscript', fix,
+    // Character offset of the flagged sentence/line in the full manuscript
+    // text, when one exists. The UI maps this to a PDF page number; null
+    // means the flag is about the whole document (e.g. "no baseline
+    // anywhere"), which has no single page to point to.
+    offset: offset != null ? offset : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +460,8 @@ function check_uncertainty_local(ctx) {
       id, 'warn', 'Number reported without its spread',
       'A single number without a spread hides how much it might vary from sample to sample.',
       s.text, m ? m[0] : null, s.section,
-      'Attach the spread to this specific number (± s.d., a 95% CI, or a range).'
+      'Attach the spread to this specific number (± s.d., a 95% CI, or a range).',
+      s.start
     ));
   }
   if (flags.length === 0) {
@@ -471,7 +496,8 @@ function check_baseline(ctx) {
         id, 'blocker', 'Superiority claimed without a named comparison',
         "This sentence claims your method is better without saying better than what, so a reader can't check the comparison.",
         superioritySentence.text, m ? m[0] : null, superioritySentence.section,
-        "Name the comparator and give its number (e.g., 'vs. 0.71 for the random baseline'), or drop the comparative wording."
+        "Name the comparator and give its number (e.g., 'vs. 0.71 for the random baseline'), or drop the comparative wording.",
+        superioritySentence.start
       )],
     };
   }
@@ -591,7 +617,8 @@ function check_abstract_body_number(ctx) {
           id, 'warn', 'Abstract number not found in the body',
           "This number in the Abstract doesn't appear (even after rounding) anywhere in the body, so a reader can't verify it.",
           s.text, raw, 'abstract',
-          `Quote the body value exactly (search Results for the number this refers to), or explain how ${raw} was aggregated from the body numbers.`
+          `Quote the body value exactly (search Results for the number this refers to), or explain how ${raw} was aggregated from the body numbers.`,
+          s.start
         ));
       }
     }
@@ -608,9 +635,13 @@ function check_figure_orphan(ctx) {
   const id = 'figure_orphan';
   const lines = ctx.text.split('\n');
   const types = [
-    { key: 'Figure', re: /^\s*(?:Figure|Fig\.)\s*(\d+)\b/i, citeRe: /\b(?:Figure|Fig\.?)\s*(\d+)\b/gi },
-    { key: 'Table', re: /^\s*Table\s*(\d+)\b/i, citeRe: /\bTable\s*(\d+)\b/gi },
-    { key: 'Extended Data Figure', re: /^\s*Extended Data Figure\s*(\d+)\b/i, citeRe: /\bExtended Data Figure\s*(\d+)\b/gi },
+    // The trailing [a-z]? allows sub-panel references (Fig. 3a, Fig 3b) to
+    // still count as citing the figure as a whole (Figure 3) — a digit
+    // followed by a letter has no \b between them, so without this the
+    // number alone would never match.
+    { key: 'Figure', re: /^\s*(?:Figure|Fig\.)\s*(\d+)[a-z]?\b/i, citeRe: /\b(?:Figure|Fig\.?)\s*(\d+)[a-z]?\b/gi },
+    { key: 'Table', re: /^\s*Table\s*(\d+)[a-z]?\b/i, citeRe: /\bTable\s*(\d+)[a-z]?\b/gi },
+    { key: 'Extended Data Figure', re: /^\s*Extended Data Figure\s*(\d+)[a-z]?\b/i, citeRe: /\bExtended Data Figure\s*(\d+)[a-z]?\b/gi },
   ];
 
   const flags = [];
@@ -646,7 +677,8 @@ function check_figure_orphan(ctx) {
         id, 'warn', `${type.key} ${num} is never cited in the text`,
         'An exhibit nobody refers to leaves the reader guessing why it is there and what it shows.',
         lines[lineIdx].trim(), num, section,
-        `Cite ${type.key} ${num} at the sentence that uses it, or move it to supplementary material.`
+        `Cite ${type.key} ${num} at the sentence that uses it, or move it to supplementary material.`,
+        offset
       ));
     }
   }
@@ -667,9 +699,16 @@ function check_balance(ctx) {
   const parts = ['introduction', 'methods', 'results', 'discussion', 'conclusion'];
   const counts = {};
   let core = 0;
+  // A combined heading (e.g. "Results and Discussion") shares one section
+  // object across two names; count its words toward `core` once, not twice.
+  const countedSections = new Set();
   for (const p of parts) {
-    counts[p] = ctx.sections[p] ? wc(ctx.sections[p].text) : 0;
-    core += counts[p];
+    const sec = ctx.sections[p];
+    counts[p] = sec ? wc(sec.text) : 0;
+    if (sec && !countedSections.has(sec)) {
+      countedSections.add(sec);
+      core += counts[p];
+    }
   }
   if (core < ctx.config.balanceMinCoreWords) {
     return { id, flags: [], skipped: true, skipMessage: 'Core sections are under 400 words — balance check skipped for such a short draft.' };
@@ -713,7 +752,8 @@ function check_abstract_quant(ctx) {
       id, 'warn', 'Abstract has no quantitative result',
       'A reader scanning only the Abstract has no number to judge the size or strength of your finding.',
       abstract.text.trim().slice(0, 300), null, 'abstract',
-      'State the headline number in the Abstract (with its spread), not just a qualitative description.'
+      'State the headline number in the Abstract (with its spread), not just a qualitative description.',
+      abstract.start
     ));
   }
   const comparisonRe = buildAltRegex(ctx.config.comparisonTerms, 'i');
@@ -723,7 +763,8 @@ function check_abstract_quant(ctx) {
       id, 'info', 'Abstract states no scope or comparison',
       'Without a comparator or a scope hedge, the Abstract reads as a universal claim, which is rarely what one study actually supports.',
       abstract.text.trim().slice(0, 300), null, 'abstract',
-      "Add a scope phrase (e.g. 'in our sample', 'preliminary evidence suggests') or name what the result is compared against."
+      "Add a scope phrase (e.g. 'in our sample', 'preliminary evidence suggests') or name what the result is compared against.",
+      abstract.start
     ));
   }
   if (flags.length === 0) {
@@ -750,7 +791,7 @@ function check_overclaim(ctx) {
     if (!matchedVerb) continue;
 
     const hasNumber = hasDecimalOrPercent(s.text);
-    const hasCitation = CITATION_RE.test(s.text);
+    const hasCitation = CITATION_RE.test(s.text) || FIGURE_TABLE_REF_RE.test(s.text);
     const hasHedge = hedgeRe.test(s.text);
     if (hasNumber || hasCitation || hasHedge) continue;
 
@@ -758,7 +799,8 @@ function check_overclaim(ctx) {
       id, 'warn', 'Strong claim without evidence in the same sentence',
       `The word "${matchedVerb.term}" asserts a strong conclusion, but this sentence has no number, citation, or scope to back it up.`,
       s.text, matchedVerb.term, s.section,
-      `Try a calibrated rewrite: replace "${matchedVerb.term}" with "${matchedVerb.rewrite}", and add the supporting number or citation.`
+      `Try a calibrated rewrite: replace "${matchedVerb.term}" with "${matchedVerb.rewrite}", and add the supporting number or citation.`,
+      s.start
     ));
   }
 
@@ -771,20 +813,41 @@ function check_overclaim(ctx) {
 // 13. limitations_absent / limitations_generic
 function check_limitations(ctx) {
   const id = 'limitations';
-  const relevantSections = ['limitations', 'discussion', 'conclusion', 'future work'];
-  const relevantText = relevantSections
-    .map((n) => (ctx.sections[n] ? ctx.sections[n].text : ''))
-    .join(' ');
+  const relevantSectionNames = ['limitations', 'discussion', 'conclusion', 'future work'];
+
+  // Join the candidate sections into one search string, but remember where
+  // each segment came from so a match's index can be traced back to a real
+  // offset (and section) in the original manuscript, not just "discussion".
+  const segments = [];
+  let relevantText = '';
+  for (const name of relevantSectionNames) {
+    const sec = ctx.sections[name];
+    if (!sec) continue;
+    const segStart = relevantText.length;
+    relevantText += sec.text;
+    segments.push({ start: segStart, end: relevantText.length, sectionStart: sec.start, name });
+    relevantText += ' ';
+  }
+  function locate(indexInRelevantText) {
+    for (const seg of segments) {
+      if (indexInRelevantText >= seg.start && indexInRelevantText < seg.end) {
+        return { offset: seg.sectionStart + (indexInRelevantText - seg.start), section: seg.name };
+      }
+    }
+    return { offset: null, section: 'discussion' };
+  }
 
   const triggerRe = buildAltRegex(ctx.config.limitationsTriggerTerms, 'i');
   const flags = [];
 
   if (!triggerRe.test(relevantText)) {
+    const firstSeg = segments[0];
     flags.push(makeFlag(
       id, 'warn', 'No limitations discussed',
       'Every method has a scope where it does not apply; not naming it makes the reader do that work, or trust the claim blindly.',
-      null, null, 'discussion',
-      'Add a short paragraph: what this test cannot detect, what result would have refuted your claim, and the cheapest experiment that would settle the biggest remaining doubt.'
+      null, null, firstSeg ? firstSeg.name : 'discussion',
+      'Add a short paragraph: what this test cannot detect, what result would have refuted your claim, and the cheapest experiment that would settle the biggest remaining doubt.',
+      firstSeg ? firstSeg.sectionStart : null
     ));
   }
 
@@ -797,11 +860,13 @@ function check_limitations(ctx) {
     const key = m[0].toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
+    const { offset, section } = locate(m.index);
     flags.push(makeFlag(
       id, 'info', 'Limitation stated as a generic resource complaint',
       `"${m[0]}" describes a constraint on you, not a limit of the claim — it doesn't tell the reader what might be wrong with the result.`,
-      null, m[0], 'discussion',
-      'Name the specific claim this affects and the specific test that is missing, instead of a generic resource complaint.'
+      null, m[0], section,
+      'Name the specific claim this affects and the specific test that is missing, instead of a generic resource complaint.',
+      offset
     ));
   }
 

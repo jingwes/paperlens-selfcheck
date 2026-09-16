@@ -201,5 +201,89 @@ References
   assert.ok(score >= 80, `expected a high score, got ${score}`);
 });
 
+// ---------------------------------------------------------------------------
+// Regression: sub-panel figure citations (Fig 3a) count as citing Figure 3
+// ---------------------------------------------------------------------------
+test('a citation to a figure sub-panel (Fig 3a) counts as citing the whole figure', () => {
+  const text = `
+Abstract
+We report n = 50 samples, mean ± s.d. throughout.
+
+Results
+Figure 3 shows the colocalization data.
+As shown in Figure 3a, the two probes colocalize without steric hindrance.
+Figure 3b shows the quantification.
+
+Discussion
+Limitations: we did not test additional cell lines.
+`;
+  const { results } = runAllChecks(text);
+  const flags = flagsFor(results, 'figure_orphan');
+  assert.strictEqual(flags.length, 0, `expected Figure 3 not to be flagged as an orphan, got ${JSON.stringify(flags.map((f) => f.title))}`);
+});
+
+// ---------------------------------------------------------------------------
+// Regression: a combined "Results and Discussion" heading is not empty
+// ---------------------------------------------------------------------------
+test('a combined "Results and Discussion" heading populates both sections', () => {
+  const text = `
+Abstract
+We report n = 50 samples, compared to a random baseline, mean ± s.d. throughout.
+
+Introduction
+${'Background text. '.repeat(60)}
+
+Methods
+We used n = 50 samples with fixed seeds across 5 runs for the classifier.
+${'Method detail text. '.repeat(60)}
+
+Results and Discussion
+${'The model performs well and this finding is consistent with prior work. '.repeat(40)}
+Limitations: we did not test additional cohorts.
+`;
+  const { ctx, results } = runAllChecks(text);
+  assert.ok(ctx.sections.results && ctx.sections.results.text.trim().length > 0, 'expected ctx.sections.results to be populated');
+  assert.ok(ctx.sections.discussion && ctx.sections.discussion.text.trim().length > 0, 'expected ctx.sections.discussion to be populated');
+  const balanceFlags = flagsFor(results, 'balance');
+  assert.ok(
+    !balanceFlags.some((f) => /thin/i.test(f.title)),
+    `expected no false "Results is thin" flag, got ${JSON.stringify(balanceFlags.map((f) => f.title))}`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Regression: a figure/table citation in the same sentence counts as
+// evidence for the overclaim check, same as a number or literature citation
+// ---------------------------------------------------------------------------
+test('an overclaim sentence backed by an in-sentence figure citation is not flagged', () => {
+  const text = `
+Abstract
+We report n = 50 samples, mean ± s.d. throughout.
+
+Results
+Simultaneous labelling with the respective probes AG-JF646 (magenta) and CA-JF549 (yellow) demonstrates functional colocalization without steric hindrance (Fig. 3a).
+
+Discussion
+Limitations: we did not test additional probes.
+`;
+  const flags = flagsFor(runAllChecks(text).results, 'overclaim');
+  assert.strictEqual(flags.length, 0, `expected no overclaim flag when the sentence cites a figure, got ${JSON.stringify(flags.map((f) => f.title))}`);
+});
+
+test('the same overclaim sentence without a figure citation is still flagged', () => {
+  const text = `
+Abstract
+We report n = 50 samples, mean ± s.d. throughout.
+
+Results
+Simultaneous labelling with the respective probes AG-JF646 (magenta) and CA-JF549 (yellow) demonstrates functional colocalization without steric hindrance.
+
+Discussion
+Limitations: we did not test additional probes.
+`;
+  const flags = flagsFor(runAllChecks(text).results, 'overclaim');
+  assert.strictEqual(flags.length, 1, `expected the unsupported claim to still be flagged, got ${flags.length}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
