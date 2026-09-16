@@ -285,5 +285,88 @@ Limitations: we did not test additional probes.
   assert.strictEqual(flags.length, 1, `expected the unsupported claim to still be flagged, got ${flags.length}`);
 });
 
+// ---------------------------------------------------------------------------
+// Regression: a numbered subsection heading ("3.1 Statistical analysis")
+// is not mistaken for a data value needing a spread
+// ---------------------------------------------------------------------------
+test('a numbered subsection heading like "3.1 Statistical analysis" is not flagged as an unsupported number', () => {
+  const text = `
+Abstract
+We report n = 50 samples, mean ± s.d. throughout, compared to a random baseline.
+
+Results
+3.1 Statistical analysis
+We performed a two-tailed t-test to compare groups using standard software.
+`;
+  const flags = flagsFor(runAllChecks(text).results, 'uncertainty_local');
+  assert.strictEqual(flags.length, 0, `expected no flag on the "3.1" heading, got ${JSON.stringify(flags.map((f) => f.quote))}`);
+});
+
+test('a real data value near a numbered heading (e.g. "3.1%") is still checked normally', () => {
+  const text = `
+Abstract
+We report n = 50 samples, mean ± s.d. throughout, compared to a random baseline.
+
+Results
+3.1 Statistical analysis
+The error rate was 3.1% across all trials in this experiment.
+`;
+  const flags = flagsFor(runAllChecks(text).results, 'uncertainty_local');
+  assert.strictEqual(flags.length, 1, `expected the genuine 3.1% value to still be flagged, got ${flags.length}`);
+});
+
+// ---------------------------------------------------------------------------
+// Regression: evidence (a figure/caption) one sentence away from the claim
+// or number it supports still counts, since real writing doesn't always
+// repeat the citation in every sentence
+// ---------------------------------------------------------------------------
+test('a number is not flagged when its spread is given in an adjacent caption sentence', () => {
+  const text = `
+Abstract
+We report n = 50 samples, mean ± s.d. throughout, compared to a random baseline.
+
+Results
+Colocalization was 0.85. Figure 2: representative images and quantification (n = 3 independent experiments, mean ± SD).
+`;
+  const flags = flagsFor(runAllChecks(text).results, 'uncertainty_local');
+  assert.strictEqual(flags.length, 0, `expected the adjacent caption's spread to cover this number, got ${JSON.stringify(flags.map((f) => f.quote))}`);
+});
+
+test('an overclaim sentence is not flagged when a figure is cited in the sentence right before it', () => {
+  const text = `
+Abstract
+We report n = 50 samples, mean ± s.d. throughout, compared to a random baseline.
+
+Results
+Figure 3 shows representative colocalization images across conditions. Simultaneous labelling with the respective probes demonstrates functional colocalization without steric hindrance.
+`;
+  const flags = flagsFor(runAllChecks(text).results, 'overclaim');
+  assert.strictEqual(flags.length, 0, `expected the preceding figure citation to cover this claim, got ${JSON.stringify(flags.map((f) => f.title))}`);
+});
+
+test('a number with no spread anywhere nearby is still flagged (the window does not over-suppress)', () => {
+  const text = `
+Abstract
+We report n = 50 samples, mean ± s.d. throughout, compared to a random baseline.
+
+Results
+Colocalization was 0.85. This was unrelated to any other measurement in the study. The weather that day was sunny.
+`;
+  const flags = flagsFor(runAllChecks(text).results, 'uncertainty_local');
+  assert.strictEqual(flags.length, 1, `expected the truly unsupported number to still be flagged, got ${flags.length}`);
+});
+
+test('an overclaim with no evidence anywhere nearby is still flagged (the window does not over-suppress)', () => {
+  const text = `
+Abstract
+We report n = 50 samples, mean ± s.d. throughout, compared to a random baseline.
+
+Results
+The weather was pleasant during data collection. Our approach demonstrates a completely new paradigm for the field. The lab was recently renovated.
+`;
+  const flags = flagsFor(runAllChecks(text).results, 'overclaim');
+  assert.strictEqual(flags.length, 1, `expected the truly unsupported claim to still be flagged, got ${flags.length}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

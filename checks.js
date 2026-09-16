@@ -338,6 +338,19 @@ function detectSections(text) {
   return { sections, headingMatches };
 }
 
+// A numbered subsection heading (e.g. "3.1 Statistical analysis", "2.3.1
+// Image acquisition") isn't a canonical section name, so detectSections
+// leaves it as ordinary text — and its leading "3.1" then reads as a
+// decimal value that needs a spread. Blank out just the numbering (keeping
+// the title text and preserving every character offset) before any
+// decimal/percentage scanning happens. The lookahead requires the number to
+// start a line and be followed by a capitalized word, which real data
+// values essentially never are.
+const OUTLINE_NUMBERING_RE = /^([ \t]*)(\d{1,2}(?:\.\d{1,2}){1,3})(\.?)(?=[ \t]+[A-Z])/gm;
+function stripOutlineNumbering(text) {
+  return text.replace(OUTLINE_NUMBERING_RE, (match, lead, num, trailDot) => lead + ' '.repeat(num.length + trailDot.length));
+}
+
 function locateSentence(sentence, sections) {
   for (const name of Object.keys(sections)) {
     if (name === '_preamble') continue;
@@ -350,7 +363,8 @@ function locateSentence(sentence, sections) {
 // ---------------------------------------------------------------------------
 // Build analysis context shared by all checks
 // ---------------------------------------------------------------------------
-function buildContext(text, config) {
+function buildContext(rawText, config) {
+  const text = stripOutlineNumbering(rawText);
   const { sections, headingMatches } = detectSections(text);
   const forcedBreaks = [];
   for (const m of headingMatches) {
@@ -376,6 +390,25 @@ function isTheoryPaper(ctx) {
 
 function sentencesInSections(ctx, names) {
   return ctx.sentences.filter((s) => names.includes(s.section));
+}
+
+// Text of the sentence at `index` plus its immediate same-section
+// neighbors. Real writing often states evidence — a figure citation, an
+// n/SD caveat — one sentence away from the claim or number it supports
+// ("Figure 2 shows X. Y was elevated.", or a trailing caption sentence with
+// "(n = 3, mean ± SD)"), not repeated in every sentence. Restricting to the
+// same section keeps this from reaching into unrelated context.
+function nearbySentenceText(ctx, index, radius) {
+  const sentences = ctx.sentences;
+  const cur = sentences[index];
+  let combined = cur.text;
+  for (let d = 1; d <= radius; d++) {
+    const prev = sentences[index - d];
+    if (prev && prev.section === cur.section) combined = prev.text + ' ' + combined;
+    const next = sentences[index + d];
+    if (next && next.section === cur.section) combined = combined + ' ' + next.text;
+  }
+  return combined;
 }
 
 function makeFlag(checkId, severity, title, explanation, quote, highlight, location, fix, offset) {
@@ -448,19 +481,24 @@ function check_uncertainty_absent(ctx) {
 function check_uncertainty_local(ctx) {
   const id = 'uncertainty_local';
   const tokenRe = buildAltRegex(ctx.config.uncertaintyTokens, 'i');
-  const candidates = sentencesInSections(ctx, ['results', 'abstract']);
   const flags = [];
-  for (const s of candidates) {
+  for (let i = 0; i < ctx.sentences.length; i++) {
     if (flags.length >= ctx.config.uncertaintyLocalMax) break;
+    const s = ctx.sentences[i];
+    if (!['results', 'abstract'].includes(s.section)) continue;
     if (!hasDecimalOrPercent(s.text)) continue;
-    const hasUncertainty = tokenRe.test(s.text) || P_VALUE_RE.test(s.text) || FROM_TO_RE.test(s.text);
+    // A caption or the next/previous sentence often carries the spread
+    // ("... 0.85 colocalization. Figure 2: n = 3 independent experiments,
+    // mean ± SD.") rather than repeating it in the sentence with the number.
+    const windowText = nearbySentenceText(ctx, i, 1);
+    const hasUncertainty = tokenRe.test(windowText) || P_VALUE_RE.test(windowText) || FROM_TO_RE.test(windowText);
     if (hasUncertainty) continue;
     const m = allDecimalOrPercent(s.text);
     flags.push(makeFlag(
       id, 'warn', 'Number reported without its spread',
       'A single number without a spread hides how much it might vary from sample to sample.',
       s.text, m ? m[0] : null, s.section,
-      'Attach the spread to this specific number (± s.d., a 95% CI, or a range).',
+      'Attach the spread to this specific number (± s.d., a 95% CI, or a range) — either right here or in the figure/table caption it comes from.',
       s.start
     ));
   }
@@ -780,8 +818,9 @@ function check_overclaim(ctx) {
   const hedgeRe = buildAltRegex(ctx.config.hedgeScopeTerms, 'i');
   const flags = [];
 
-  for (const s of ctx.sentences) {
+  for (let i = 0; i < ctx.sentences.length; i++) {
     if (flags.length >= ctx.config.overclaimMaxFlags) break;
+    const s = ctx.sentences[i];
     let matchedVerb = null;
     for (const v of ctx.config.overclaimVerbs) {
       if (theory && v.proofFamily) continue;
@@ -790,22 +829,26 @@ function check_overclaim(ctx) {
     }
     if (!matchedVerb) continue;
 
+    // A citation or figure/table reference often sits in the sentence
+    // right before or after the claim it supports ("Figure 2 shows X.
+    // This demonstrates..."), not repeated in the claim's own sentence.
+    const windowText = nearbySentenceText(ctx, i, 1);
     const hasNumber = hasDecimalOrPercent(s.text);
-    const hasCitation = CITATION_RE.test(s.text) || FIGURE_TABLE_REF_RE.test(s.text);
+    const hasCitation = CITATION_RE.test(windowText) || FIGURE_TABLE_REF_RE.test(windowText);
     const hasHedge = hedgeRe.test(s.text);
     if (hasNumber || hasCitation || hasHedge) continue;
 
     flags.push(makeFlag(
-      id, 'warn', 'Strong claim without evidence in the same sentence',
-      `The word "${matchedVerb.term}" asserts a strong conclusion, but this sentence has no number, citation, or scope to back it up.`,
+      id, 'warn', 'Strong claim without nearby evidence',
+      `The word "${matchedVerb.term}" asserts a strong conclusion, but neither this sentence nor its neighbors cite a number, a source, or a figure/table to back it up.`,
       s.text, matchedVerb.term, s.section,
-      `Try a calibrated rewrite: replace "${matchedVerb.term}" with "${matchedVerb.rewrite}", and add the supporting number or citation.`,
+      `Try a calibrated rewrite: replace "${matchedVerb.term}" with "${matchedVerb.rewrite}", and cite the supporting number, source, or figure/table.`,
       s.start
     ));
   }
 
   if (flags.length === 0) {
-    return { id, flags: [], passMessage: 'Strong claims in the manuscript are backed by a number, citation, or scope in the same sentence.' };
+    return { id, flags: [], passMessage: 'Strong claims in the manuscript are backed by a number, citation, or figure/table reference nearby.' };
   }
   return { id, flags };
 }
