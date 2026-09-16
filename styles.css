@@ -365,18 +365,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .flag-card .fix-text strong { color: var(--accent-dark); }
 
-.copy-fix-btn {
-  font-size: 0.8rem;
-  padding: 5px 10px;
-  white-space: nowrap;
-}
-
-.copy-fix-btn.copied {
-  background: var(--pass-bg);
-  border-color: var(--pass-border);
-  color: var(--pass);
-}
-
 .pass-list {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -426,7 +414,6 @@ footer.app-footer {
 
 @media (max-width: 560px) {
   .summary-strip { flex-direction: column; align-items: flex-start; }
-  .flag-card .fix-line { flex-direction: column; }
   .tabs { overflow-x: auto; }
 }
 
@@ -434,8 +421,7 @@ footer.app-footer {
 
 @media print {
   header.app-header .subtitle,
-  .tabs, .tab-panel, .export-actions, .no-print,
-  .copy-fix-btn {
+  .tabs, .tab-panel, .export-actions, .no-print {
     display: none !important;
   }
   body { background: #fff; }

@@ -44,7 +44,6 @@
   const passListEl = document.getElementById('passList');
 
   const downloadReportBtn = document.getElementById('downloadReportBtn');
-  const copyAllFixesBtn = document.getElementById('copyAllFixesBtn');
 
   let currentDraftName = 'draft';
   let lastRunData = null; // { results, score, blockers, warns, infos }
@@ -245,7 +244,6 @@
         <div class="location">Location: ${escapeHtml(friendlyLocation(flag.location))}</div>
         <div class="fix-line">
           <div class="fix-text"><strong>Fix:</strong> ${escapeHtml(flag.fix)}</div>
-          <button type="button" class="copy-fix-btn" data-fix="${escapeHtml(flag.fix)}">Copy fix</button>
         </div>
       </div>
     `;
@@ -284,53 +282,6 @@
 
     resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
-
-  // Clipboard writes can be rejected (permissions, an unfocused document,
-  // older browsers); fall back to a hidden-textarea copy so the button
-  // always gives the student real feedback instead of failing silently.
-  function copyText(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      return navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
-    }
-    return legacyCopy(text);
-  }
-
-  function legacyCopy(text) {
-    return new Promise((resolve, reject) => {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      try {
-        const ok = document.execCommand('copy');
-        document.body.removeChild(ta);
-        if (ok) resolve(); else reject(new Error('execCommand copy failed'));
-      } catch (e) {
-        document.body.removeChild(ta);
-        reject(e);
-      }
-    });
-  }
-
-  resultsEl.addEventListener('click', (e) => {
-    const btn = e.target.closest('.copy-fix-btn');
-    if (!btn) return;
-    const fixText = btn.dataset.fix;
-    copyText(fixText).then(() => {
-      btn.textContent = 'Copied!';
-      btn.classList.add('copied');
-      setTimeout(() => {
-        btn.textContent = 'Copy fix';
-        btn.classList.remove('copied');
-      }, 1500);
-    }).catch(() => {
-      btn.textContent = 'Copy failed — select manually';
-      setTimeout(() => { btn.textContent = 'Copy fix'; }, 2000);
-    });
-  });
 
   // ---- Export -------------------------------------------------------------
   function sanitizeFilename(name) {
@@ -399,21 +350,6 @@
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  });
-
-  copyAllFixesBtn.addEventListener('click', () => {
-    if (!lastRunData) return;
-    const fixes = lastRunData.results
-      .flatMap((r) => r.flags)
-      .map((f) => `- ${f.fix}`)
-      .join('\n');
-    copyText(fixes || 'No fixes needed — nothing was flagged.').then(() => {
-      copyAllFixesBtn.textContent = 'Copied!';
-      setTimeout(() => { copyAllFixesBtn.textContent = 'Copy all fixes'; }, 1500);
-    }).catch(() => {
-      copyAllFixesBtn.textContent = 'Copy failed — select manually';
-      setTimeout(() => { copyAllFixesBtn.textContent = 'Copy all fixes'; }, 2000);
-    });
   });
 
   selectTab('upload');
